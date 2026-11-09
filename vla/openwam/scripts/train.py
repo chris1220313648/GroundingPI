@@ -142,15 +142,13 @@ def main(cfg: DictConfig) -> None:
 
     sys.path.insert(0, str(PROJECT_ROOT))
 
+    failed = False
     try:
         _train(cfg)
     except BaseException:
-        # destroy_process_group below is a collective. If only this rank
-        # raised, the other ranks are still in mid-training collectives
-        # (e.g. accelerate's RNG-state broadcast inside dataloader.__iter__),
-        # and destroy will block forever waiting for them — masking the
-        # actual rank-0 exception. Mirror the VLA path's pre-destroy
-        # traceback print so the real error survives the deadlock.
+        failed = True
+        # Flush the failing rank's traceback and skip collective teardown so
+        # torchrun can terminate peers still inside training collectives.
         import traceback as _tb
 
         rank = os.environ.get("RANK", os.environ.get("LOCAL_RANK", "?"))
@@ -164,7 +162,9 @@ def main(cfg: DictConfig) -> None:
         # warning on shutdown by tearing down the NCCL process group cleanly.
         import torch.distributed as dist
 
-        if dist.is_available() and dist.is_initialized():
+        # Let torchrun terminate peers on rank failure; a collective teardown
+        # here can deadlock against peers still inside backward/all-reduce.
+        if not failed and dist.is_available() and dist.is_initialized():
             dist.destroy_process_group()
 
 

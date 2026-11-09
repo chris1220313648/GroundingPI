@@ -85,6 +85,21 @@ def build_cosine_scheduler(optimizer, *, total_opt_steps: int, cfg, num_processe
     return scheduler
 
 
+def restart_resume_scheduler(scheduler, optimizer, *, opt_step, restart_opt_step, initial_state, initial_lrs):
+    """Restart only at the chosen resume boundary, leaving optimizer moments intact."""
+    if opt_step < restart_opt_step:
+        raise ValueError("Resume checkpoint precedes scheduler_restart_opt_step")
+    if opt_step != restart_opt_step:
+        return False
+    if len(optimizer.param_groups) != len(initial_lrs):
+        raise ValueError("Resumed optimizer parameter groups differ from the new schedule")
+    scheduler.load_state_dict(initial_state)
+    for group, lr in zip(optimizer.param_groups, initial_lrs):
+        group["lr"] = lr
+    logger.info("[resume] restarted LR schedule at optimizer step %d", opt_step)
+    return True
+
+
 def init_wandb(cfg):
     """Init a wandb run from cfg.project.wandb. Returns the run or None."""
     wandb_cfg = cfg.project.get("wandb", None)
@@ -121,30 +136,19 @@ def reduce_step_metrics(accelerator, losses: dict, grad_norm) -> dict:
     def _f(v):
         return v.item() if isinstance(v, torch.Tensor) else float(v)
 
-    if accelerator is not None and accelerator.num_processes > 1:
-        local = torch.tensor(
-            [
-                loss.detach().float().item(),
-                _f(losses["video"]),
-                _f(losses["action"]),
-                grad_norm.item(),
-            ],
-            device=loss.device,
-            dtype=torch.float32,
-        ).reshape(1, -1)
-        g = accelerator.gather(local).mean(dim=0)
-        return {
-            "loss_total": g[0].item(),
-            "loss_video": g[1].item(),
-            "loss_action": g[2].item(),
-            "grad_norm": g[3].item(),
-        }
-    return {
-        "loss_total": loss.detach().item(),
-        "loss_video": _f(losses["video"]),
-        "loss_action": _f(losses["action"]),
-        "grad_norm": grad_norm.item(),
+    metrics = {
+        "loss_total": _f(loss.detach()), "loss_video": _f(losses["video"]),
+        "loss_action": _f(losses["action"]), "grad_norm": _f(grad_norm),
     }
+    if "grounding" in losses:
+        metrics.update(loss_grounding=_f(losses["grounding"]),
+                       grounding_tokens=_f(losses["grounding_tokens"]),
+                       grounding_sample_fraction=_f(losses["grounding_sample_fraction"]))
+    if accelerator is not None and accelerator.num_processes > 1:
+        local = torch.tensor(list(metrics.values()), device=loss.device, dtype=torch.float32).reshape(1, -1)
+        reduced = accelerator.gather(local).mean(dim=0).tolist()
+        return dict(zip(metrics, reduced))
+    return metrics
 
 
 def write_debug_loss_row(
@@ -166,10 +170,13 @@ def write_debug_loss_row(
     write_header = not os.path.exists(loss_log_path)
     label_cols = ",".join(f"loss_{name}" for name, _ in labels)
     label_vals = ",".join(f"{metrics[key]:.10g}" for _, key in labels)
+    extras = [key for key in ("grounding_tokens", "grounding_sample_fraction") if key in metrics]
+    extra_cols = "".join("," + key for key in extras)
+    extra_vals = "".join(f",{metrics[key]:.10g}" for key in extras)
     with open(loss_log_path, "a", encoding="utf-8") as f:
         if write_header:
-            f.write(f"step,opt_step,epoch,loss,loss_video,{label_cols},grad_norm,lr,steps_per_sec\n")
+            f.write(f"step,opt_step,epoch,loss,loss_video,{label_cols},grad_norm,lr,steps_per_sec{extra_cols}\n")
         f.write(
             f"{global_step},{opt_step},{epoch},{metrics['loss_total']:.10g},{metrics['loss_video']:.10g},{label_vals},"
-            f"{metrics['grad_norm']:.10g},{lr:.10g},{steps_per_sec:.10g}\n"
+            f"{metrics['grad_norm']:.10g},{lr:.10g},{steps_per_sec:.10g}{extra_vals}\n"
         )

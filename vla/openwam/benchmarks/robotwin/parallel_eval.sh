@@ -185,6 +185,9 @@ DISPATCHER_LOG="${LOG_DIR}/dispatcher.log"
 rm -f "${ADDR_FILE}" "${DONE_FILE}"
 
 TOTAL_JOBS=$(( ${#TASKS[@]} * ${#MODES[@]} ))
+export ROBOTWIN_TEST_NUM="$TEST_NUM"
+printf 'run_id=%s\npolicy_name=%s\nmode=%s\ntest_num=%s\ntasks=%s\ntotal_jobs=%s\nseed=%s\n' \
+    "$timestamp" "$POLICY_NAME" "$TASK_CONFIG" "$TEST_NUM" "${TASKS[*]}" "$TOTAL_JOBS" "$BASE_SEED" > "$LOG_DIR/run.env"
 echo "[INFO] mode=${TASK_CONFIG} name=${POLICY_NAME} test_num=${TEST_NUM}"
 echo "[INFO] workers=${NUM_WORKERS} host=${SERVER_HOST} port_base=${PORT_BASE} dup_theta=${MIN_REMAINING_FOR_DUP} no_dup=${NO_DUP}"
 echo "[INFO] logs=${LOG_DIR}"

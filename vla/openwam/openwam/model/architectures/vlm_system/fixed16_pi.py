@@ -186,11 +186,27 @@ class VlmSystemFixed16PiArchitecture(Fixed16PiArchitectureBase):
             raise ValueError("Mixed vlm_inputs in batch: provide vlm_inputs for all samples or none.")
 
         prompts = [sample["prompt"] for sample in samples]
-        images = [extract_first_image(sample) for sample in samples]
+        images = [sample.get("observation_images", extract_first_image(sample)) for sample in samples]
         if any(image is None for image in images):
             raise ValueError("vlm_system_fixed16_pi requires sample['vlm_inputs'] or a first frame image/video[0].")
-        inputs["vlm_inputs"] = self.vlm_backbone.prepare_vlm_inputs(prompts, images)
+        if getattr(self, "grounding_supervision", False):
+            if not all("grounding_answer" in sample for sample in samples):
+                raise ValueError("Grounding CE requires grounding_answer in each sample")
+            inputs["vlm_inputs"] = self.vlm_backbone.prepare_grounding_inputs(
+                prompts, images, [sample["grounding_answer"] for sample in samples]
+            )
+        else:
+            inputs["vlm_inputs"] = self.vlm_backbone.prepare_vlm_inputs(prompts, images)
         return inputs
+
+    def compute_loss(self, *, lambda_grounding=0.0, **inputs):
+        if not lambda_grounding:
+            return super().compute_loss(**inputs)
+        grounding = {}
+        result = super().compute_loss(**inputs, grounding_out=grounding)
+        result["loss"] = result["loss"] + lambda_grounding * grounding.pop("ce")
+        result.update(grounding)
+        return result
 
     # ------------------------------------------------------------------
     # Backbone hooks
@@ -220,7 +236,13 @@ class VlmSystemFixed16PiArchitecture(Fixed16PiArchitectureBase):
         if vlm_inputs is None:
             raise ValueError("vlm_system_fixed16_pi.forward requires `vlm_inputs` in the pipeline inputs.")
 
-        taps, key_padding_mask = self.vlm_backbone.extract_layerwise_features(vlm_inputs, sorted(self._required_blocks))
+        if "labels" in vlm_inputs:
+            taps, key_padding_mask, ce, metrics = self.vlm_backbone.extract_grounding_features(
+                vlm_inputs, sorted(self._required_blocks)
+            )
+            pipeline_inputs["grounding_out"].update(ce=ce, **metrics)
+        else:
+            taps, key_padding_mask = self.vlm_backbone.extract_layerwise_features(vlm_inputs, sorted(self._required_blocks))
         if self._detach_backbone_features:
             taps = {block_id: hidden.detach() for block_id, hidden in taps.items()}
         return self.backbone_conditioner(taps, key_padding_mask=key_padding_mask)

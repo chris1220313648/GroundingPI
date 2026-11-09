@@ -27,6 +27,10 @@ The code is a trimmed derivative of [OpenWAM](https://github.com/OpenWAM-Officia
 only the two Fixed-16 architectures, the seven backbone adapters, the RoboTwin
 dataloader, the trainer, the policy server and the RoboTwin evaluation client are kept.
 
+For the added **GroundingPI checkpoint** adapter and this server’s train/evaluate
+workflow, see [GROUNDINGPI_ROBOTWIN.md](GROUNDINGPI_ROBOTWIN.md). It uses a
+separate Transformers 5.7.0 environment and evaluates 20 episodes per task/mode.
+
 ## 1. Environments
 
 Tested with Python 3.12, CUDA 12.8 drivers and torch 2.7.1. Two virtual

@@ -5,7 +5,8 @@ a client sends straight to the model (see ``openwam/deploy/obs_preprocess.py``).
 Each benchmark therefore owns the prompt processing its checkpoints were trained
 with. This module is RoboTwin's: it wraps a raw task instruction in the exact
 template the RoboTwin dataloader applies at training time, so eval-time prompts
-stay in-distribution.
+stay in-distribution. CoT evaluations set ``ROBOTWIN_COT_PROMPT_FILE`` to a
+JSON file containing the training coordinate setup and grounding request.
 
 The wrapped string must stay byte-for-byte identical to
 ``openwam.dataloader.transforms.multiview.format_prompt_for_inference`` — the two
@@ -17,6 +18,20 @@ inside the thin RoboTwin eval environment, which only ships numpy / opencv /
 Pillow.
 """
 
+import json
+import os
+from functools import lru_cache
+from pathlib import Path
+
+
+@lru_cache(maxsize=1)
+def _cot_template(path):
+    template = json.loads(Path(path).read_text())
+    if not all(isinstance(template.get(k), str) and template[k] for k in ("coordinate_setup", "request")):
+        raise ValueError("CoT prompt requires coordinate_setup and request")
+    return template
+
+
 # Byte-for-byte identical to the training-time wrapper in
 # openwam/dataloader/transforms/multiview.py. Kept as a bare prefix + concat (not
 # str.format) so equality with the training template is obvious by construction.
@@ -25,6 +40,9 @@ _DEPLOY_PROMPT_PREFIX = "A video recorded from a robot's point of view executing
 
 def format_prompt_for_inference(base_prompt: str) -> str:
     """Wrap a raw RoboTwin instruction in the training-time deploy template."""
+    if path := os.environ.get("ROBOTWIN_COT_PROMPT_FILE"):
+        template = _cot_template(path)
+        return template["coordinate_setup"] + "\nTask instruction: " + base_prompt + "\n" + template["request"]
     return _DEPLOY_PROMPT_PREFIX + base_prompt
 
 

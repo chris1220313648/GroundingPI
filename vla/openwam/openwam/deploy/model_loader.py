@@ -79,6 +79,11 @@ def load_from_checkpoint_dir(
         ``(cfg, architecture)`` — the resolved config and architecture
         with all weights restored.
     """
+    # Constructors may allocate on the current CUDA device before final placement.
+    target_device = torch.device(device)
+    if target_device.type == "cuda":
+        torch.cuda.set_device(target_device.index if target_device.index is not None else torch.cuda.current_device())
+
     # 1. Load config
     config_path = os.path.join(ckpt_dir, "config.yaml")
     if not os.path.exists(config_path):

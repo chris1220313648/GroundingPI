@@ -1,0 +1,15 @@
+type: robotwin_cot
+dataset_dir: /share/project/robot-rfm/robot-processed-data/lerobot_v3_data/robotwin2.0_Lerobotv3_cot/clean/20261029_v1/datasets/groundingpi_target_only
+prepared_dir: null
+height: 384
+width: 320
+action_mode: eef
+normalize_mode: min-max
+multiview: true
+camera_layout: [head_camera, left_camera, right_camera]
+num_observation_frames: 1
+image_input_mode: composite
+color_jitter: null
+filter_static_segments: false
+static_segment_threshold: 1.0e-5
+max_static_retry: 3

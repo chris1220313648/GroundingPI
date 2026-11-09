@@ -77,6 +77,9 @@ def _register_builtins():
     from openwam.dataloader.robotwin import MultiTaskRoboTwinDataset
 
     register_dataset("robotwin")(MultiTaskRoboTwinDataset)
+    from openwam.dataloader.robotwin_cot import RoboTwinCoTDataset
+
+    register_dataset("robotwin_cot")(RoboTwinCoTDataset)
 
 
 _register_builtins()

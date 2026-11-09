@@ -205,6 +205,8 @@ def export_from_results_jsonl(
         lambda: {"episodes": 0, "successes": 0, "step_limit_hits": 0}
     )
     bad_lines = 0
+    seen_seeds = set()
+    duplicates = 0
     with results_path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -216,17 +218,26 @@ def export_from_results_jsonl(
             except (json.JSONDecodeError, KeyError):
                 bad_lines += 1
                 continue
+            episode_key = (*key, rec.get("seed"))
+            if episode_key in seen_seeds:
+                duplicates += 1
+            seen_seeds.add(episode_key)
             a = agg[key]
             a["episodes"] += 1
             a["successes"] += 1 if rec.get("success") else 0
             a["step_limit_hits"] += 1 if rec.get("step_limit_hit") else 0
 
     failures: List[str] = []
+    if duplicates:
+        failures.append(f"{duplicates} duplicate task/mode/seed records")
     if bad_lines:
         failures.append(f"{bad_lines} malformed results.jsonl line(s)")
 
     expected_keys = expected_job_keys(run_env)
     if expected_keys is not None:
+        unexpected = sorted(set(agg) - expected_keys)
+        if unexpected:
+            failures.append(f"unexpected task/mode: {format_job_keys(unexpected)}")
         missing = sorted(expected_keys - set(agg))
         if missing:
             failures.append(f"missing task/mode (no episodes): {format_job_keys(missing)}")
@@ -239,8 +250,8 @@ def export_from_results_jsonl(
         a = agg[(task, mode)]
         eps = a["episodes"]
         rate = (a["successes"] / eps) if eps else 0.0
-        status = "ok" if (target_n is None or eps >= target_n) else "incomplete"
-        if target_n is not None and eps < target_n:
+        status = "ok" if (target_n is None or eps == target_n) else "incomplete"
+        if target_n is not None and eps != target_n:
             failures.append(f"{task}|{mode}: {eps}/{target_n} episodes")
         rows.append(
             {

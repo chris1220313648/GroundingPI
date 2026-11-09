@@ -21,6 +21,7 @@ Usage:
     trainer.train()
 """
 
+import copy
 import itertools
 import logging
 import math
@@ -49,6 +50,7 @@ from openwam.train.utils.training_utils import (
     init_wandb,
     log_parameter_counts,
     reduce_step_metrics,
+    restart_resume_scheduler,
     write_debug_loss_row,
 )
 
@@ -137,6 +139,10 @@ class OpenWAMTrainer:
         # Loss weights from the training config
         self.lambda_video = float(t.lambda_video)
         self.lambda_action = float(t.lambda_action)
+        self.lambda_grounding = float(t.get("lambda_grounding", 0.0))
+        self.architecture.grounding_supervision = self.lambda_grounding > 0
+        if self.lambda_grounding and not hasattr(getattr(self.architecture, "vlm_backbone", None), "prepare_grounding_inputs"):
+            raise ValueError("Grounding CE requires a GroundingPI VLM architecture")
 
         self._timestep_sampler = None
 
@@ -203,7 +209,18 @@ class OpenWAMTrainer:
                 total_opt_steps = min(total_opt_steps, max_opt_steps)
         else:
             total_opt_steps = max_opt_steps
-        scheduler = self.build_lr_scheduler(optimizer, total_opt_steps, debug=debug)
+        restart_opt_step = cfg_get(t, "scheduler_restart_opt_step", None)
+        if restart_opt_step is not None:
+            restart_opt_step = int(restart_opt_step)
+            if not resume_path or debug or cfg_get(t, "lr_scheduler") != "cosine":
+                raise ValueError("scheduler_restart_opt_step requires a non-debug cosine resume")
+            if not 0 <= restart_opt_step < total_opt_steps:
+                raise ValueError("scheduler_restart_opt_step must precede the training endpoint")
+        schedule_steps = total_opt_steps - (restart_opt_step or 0)
+        scheduler = self.build_lr_scheduler(optimizer, schedule_steps, debug=debug)
+        if restart_opt_step is not None:
+            initial_scheduler_state = copy.deepcopy(scheduler.state_dict())
+            initial_lrs = [group["lr"] for group in optimizer.param_groups]
 
         if debug:
             save_steps = save_steps_override
@@ -248,12 +265,18 @@ class OpenWAMTrainer:
             global_step, opt_step, start_epoch, skip_first = self.resume_if_configured(
                 resume_state_dir, dataloader, grad_accum
             )
+            if restart_opt_step is not None:
+                restart_resume_scheduler(
+                    scheduler, optimizer, opt_step=opt_step, restart_opt_step=restart_opt_step,
+                    initial_state=initial_scheduler_state, initial_lrs=initial_lrs,
+                )
             already_done = (num_epochs is not None and start_epoch >= num_epochs) or (
                 max_steps and global_step >= max_steps
             )
             if already_done:
                 logger.info("[resume] global_step=%d already complete; finishing.", global_step)
-                self.finish_training(output_path, global_step, save_steps, is_main, wandb_run)
+                self.finish_training(output_path, global_step, save_steps, is_main, wandb_run,
+                                     opt_step=opt_step, epoch=start_epoch)
                 return
             if skip_first > 0 and self._run_seed is None:
                 logger.warning(
@@ -265,7 +288,7 @@ class OpenWAMTrainer:
                 )
 
         _step_t0 = _time.monotonic()
-        pbar = tqdm(total=total_steps, desc="Training", unit="step", initial=min(global_step, total_steps))
+        pbar = tqdm(total=total_steps, desc="Training", unit="step", initial=min(global_step, total_steps), disable=not is_main)
 
         assert self.accelerator is not None, "OpenWAMTrainer requires an Accelerator"
 
@@ -340,11 +363,13 @@ class OpenWAMTrainer:
 
                 if max_steps and global_step >= max_steps:
                     pbar.close()
-                    self.finish_training(output_path, global_step, save_steps, is_main, wandb_run)
+                    self.finish_training(output_path, global_step, save_steps, is_main, wandb_run,
+                                         opt_step=opt_step, epoch=epoch)
                     return
 
         pbar.close()
-        self.finish_training(output_path, global_step, save_steps, is_main, wandb_run)
+        self.finish_training(output_path, global_step, save_steps, is_main, wandb_run,
+                             opt_step=opt_step, epoch=epoch)
 
     # (3) Called by train() first — AdamW over the per-module (action/video) LR param groups.
     def build_optimizer(self) -> torch.optim.Optimizer:
@@ -554,6 +579,9 @@ class OpenWAMTrainer:
         # Propagate device down through architecture; frozen modules (T5/VAE) idempotent move.
         arch.set_dtype_device(arch.dtype, self.accelerator.device)
         arch.move_frozen_to_device(self.accelerator.device)
+        # HF from_pretrained() leaves descendants in eval mode, disabling their
+        # activation checkpointing even when its configuration flag is enabled.
+        self.architecture.train()
         logger.info(
             "architecture wrapped (%s), device=%s",
             type(self.architecture).__name__,
@@ -602,12 +630,17 @@ class OpenWAMTrainer:
             lambda_video=self.lambda_video,
             lambda_action=self.lambda_action,
             decoupled_sampler=self._timestep_sampler,
+            **({"lambda_grounding": self.lambda_grounding} if self.lambda_grounding else {}),
         )
 
         return {
             "total": result["loss"],
             "video": result.get("loss_video", torch.tensor(0.0)),
             "action": result.get("loss_action", torch.tensor(0.0)),
+            **({"grounding": result["loss_grounding"],
+                "grounding_tokens": result["grounding_tokens"],
+                "grounding_sample_fraction": result["grounding_sample_fraction"]}
+               if "loss_grounding" in result else {}),
         }
 
     # (10) Called each step in train()'s loop — progress bar, wandb log, debug loss-history CSV.
@@ -628,6 +661,8 @@ class OpenWAMTrainer:
     ) -> None:
         """Update progress bar, log to wandb, and (debug) write the loss-history CSV row."""
         labels = [("action", "loss_action")]
+        if "loss_grounding" in metrics:
+            labels.append(("grounding", "loss_grounding"))
         loss_total = metrics["loss_total"]
         loss_video = metrics["loss_video"]
         grad_norm = metrics["grad_norm"]
@@ -653,9 +688,12 @@ class OpenWAMTrainer:
             }
             for name, key in labels:
                 log_dict[f"train/loss_{name}"] = metrics[key]
+            for key in ("grounding_tokens", "grounding_sample_fraction"):
+                if key in metrics:
+                    log_dict[f"train/{key}"] = metrics[key]
             wandb_run.log(log_dict, step=global_step)
 
-        if not debug:
+        if not debug and not self.cfg.training.get("log_metrics_csv", False):
             return
         is_main = self.accelerator is None or self.accelerator.is_main_process
         if not is_main:
@@ -685,18 +723,20 @@ class OpenWAMTrainer:
                 steps_per_sec=steps_per_sec,
             )
 
-    # (11) Called on every train() exit — final weights, drop resume state, close wandb.
-    def finish_training(self, output_path: str, global_step: int, save_steps, is_main: bool, wandb_run) -> None:
-        """Unified teardown for every exit path: final weights, drop resume state, close wandb.
-
-        Falsy ``save_steps`` = a profiling/no-write run, so no final artifact (matches the
-        periodic-save gating). After the final weights land, ``finalize_keep_weights_only``
-        removes every ``accel_state_step_*`` and all but the final weights (rank-0, post-barrier).
-        """
+    # (11) Called on every train() exit — final checkpoint, retention, close wandb.
+    def finish_training(self, output_path: str, global_step: int, save_steps, is_main: bool, wandb_run,
+                        *, opt_step: int, epoch: int) -> None:
+        """Save final weights and, when requested, a matching resumable state."""
+        retain_state = bool(self.cfg.training.get("retain_resume_state", False))
         if save_steps:
             save_weights(self.accelerator, self.architecture, output_path, global_step, final=True)
+            if retain_state:
+                save_full_state(self.accelerator, output_path, global_step, opt_step, epoch)
         self.accelerator.wait_for_everyone()
         if is_main:
-            finalize_keep_weights_only(output_path)
+            if retain_state and save_steps:
+                manage_checkpoints(output_path, int(self.cfg.training.get("keep_last_k_ckpts", 3)))
+            elif not retain_state:
+                finalize_keep_weights_only(output_path)
         if wandb_run is not None:
             wandb_run.finish()

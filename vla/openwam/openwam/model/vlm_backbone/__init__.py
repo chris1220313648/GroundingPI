@@ -17,6 +17,7 @@ from openwam.model.vlm_backbone.registry import (
 
 __all__ = [
     "VlmBackbone",
+    "GroundingPIBackbone",
     "HFVlmBackbone",
     "LocateAnythingBackbone",
     "PaliGemmaBackbone",
@@ -45,3 +46,6 @@ register_vlm_backbone("locate_anything")(LocateAnythingBackbone)
 # RynnBrain-2B is a Qwen3-VL derivative; the named subclass preserves model-family
 # identity in configs/logs while sharing the standard Qwen3-VL implementation.
 register_vlm_backbone("rynnbrain")(RynnBrainBackbone)
+
+from openwam.model.vlm_backbone.groundingpi_backbone import GroundingPIBackbone
+register_vlm_backbone("groundingpi")(GroundingPIBackbone)

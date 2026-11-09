@@ -196,11 +196,10 @@ class BaseWAMArchitecture(ABC, nn.Module):
         default yaml's documentation-friendly ``encoder:`` block doesn't
         break the default training command.
         """
-        from openwam.model.video_backbone import build_video_backbone
-
         vb_cfg = cfg.get("video_backbone", {}) if isinstance(cfg, dict) else getattr(cfg, "video_backbone", None)
-        if vb_cfg is None:
+        if not vb_cfg:
             return
+        from openwam.model.video_backbone import build_video_backbone
 
         source = vb_cfg.get("_source") if isinstance(vb_cfg, dict) else getattr(vb_cfg, "_source", None)
         vb_name = vb_cfg.get("name") if isinstance(vb_cfg, dict) else getattr(vb_cfg, "name", None)
@@ -545,7 +544,15 @@ class BaseWAMArchitecture(ABC, nn.Module):
         else:
             state_dict = _exclude_vlm_from_state_dict(state_dict)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        save_file(state_dict, path)
+        import tempfile
+        fd, temporary = tempfile.mkstemp(prefix=".checkpoint-", suffix=".safetensors", dir=os.path.dirname(path) or ".")
+        os.close(fd)
+        try:
+            save_file(state_dict, temporary)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def load_checkpoint(self, path: str, strict: bool = True) -> None:
         """Load architecture state from a safetensors checkpoint.

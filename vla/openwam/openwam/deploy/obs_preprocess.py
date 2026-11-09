@@ -85,8 +85,12 @@ class ObsPreprocessor:
         img_height: int,
         img_width: int,
         requires_proprio: bool = False,
+        image_input_mode: str = "composite",
     ):
         self.multiview = bool(multiview)
+        if image_input_mode not in ("composite", "separate"):
+            raise ValueError(f"Unknown image_input_mode: {image_input_mode}")
+        self.image_input_mode = image_input_mode
         self.camera_layout = list(camera_layout)
         self.img_height = int(img_height)
         self.img_width = int(img_width)
@@ -109,12 +113,16 @@ class ObsPreprocessor:
             _h = getattr(dl, "height", 384)
         if _w is None and dl is not None:
             _w = getattr(dl, "width", 320)
+        if _cfg_select(cfg, "dataloader.image_input_mode", "composite") == "separate":
+            _h = _cfg_select(cfg, "dataloader.height", 240)
+            _w = _cfg_select(cfg, "dataloader.width", 320)
         return cls(
             multiview=multiview,
             camera_layout=camera_layout,
             img_height=int(_h if _h is not None else 384),
             img_width=int(_w if _w is not None else 320),
             requires_proprio=_resolve_requires_proprio(cfg, engine),
+            image_input_mode=_cfg_select(cfg, "dataloader.image_input_mode", "composite"),
         )
 
     def preprocess(self, obs: dict) -> dict:
@@ -170,7 +178,16 @@ class ObsPreprocessor:
         head_pil = _as_pil(head_raw, ctx="images['head_camera']")
 
         # --- Dispatch by server's configured view mode ---
-        if not self.multiview:
+        if self.image_input_mode == "separate":
+            views = [head_pil]
+            for key in ("left_wrist_camera", "right_wrist_camera"):
+                if imgs.get(key) is None:
+                    raise ObsValidationError(f"Separate-image checkpoint requires images['{key}']")
+                views.append(_as_pil(imgs[key], ctx=f"images['{key}']"))
+            from PIL import Image
+            obs["observation_images"] = [im.resize((self.img_width, self.img_height), Image.Resampling.BILINEAR) for im in views]
+            obs["image"] = obs["observation_images"][0]
+        elif not self.multiview:
             if imgs.get("left_wrist_camera") is not None or imgs.get("right_wrist_camera") is not None:
                 logger.info("[obs] single-view mode; ignoring wrist camera inputs.")
             obs["image"] = crop_and_resize(head_pil, self.img_height, self.img_width)

@@ -86,7 +86,7 @@ for ((i = 0; i < NUM_GPUS; i++)); do
 
     echo "[deploy_multi] GPU ${gpu} -> ws=${port} log=${log_file}"
 
-    python "$SCRIPT_DIR/deploy.py" \
+    LOCAL_RANK="$i" python "$SCRIPT_DIR/deploy.py" \
         "${ckpt_args[@]}" \
         --device "cuda:${gpu}" \
         --port "$port" \

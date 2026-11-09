@@ -111,65 +111,81 @@ def _make_dispatcher_eval_policy(module, client: "D.DispatcherClient", heartbeat
             if not commit.get("commit"):
                 break  # target already met elsewhere; discard this valid scene
 
-            # -- (2) rollout with the policy under test (same seed => same scene) --
-            TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
-            results = generate_episode_descriptions(args["task_name"], [episode_info["info"]], test_num)
-            instruction = np.random.choice(results[0][instruction_type])
-            TASK_ENV.set_instruction(instruction=instruction)
+            # Retry infrastructure exceptions on the same committed scene.
+            # Exhaustion fails the worker; it is never reported as policy failure.
+            for rollout_attempt in range(3):
+                try:
+                    # -- (2) rollout with the policy under test (same seed => same scene) --
+                    TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+                    results = generate_episode_descriptions(args["task_name"], [episode_info["info"]], test_num)
+                    instruction = np.random.choice(results[0][instruction_type])
+                    TASK_ENV.set_instruction(instruction=instruction)
 
-            if TASK_ENV.eval_video_path is not None:
-                ffmpeg = subprocess.Popen(
-                    [
-                        "ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo",
-                        "-pixel_format", "rgb24", "-video_size", video_size,
-                        "-framerate", "10", "-i", "-", "-pix_fmt", "yuv420p",
-                        "-vcodec", "libx264", "-crf", "23",
-                        f"{TASK_ENV.eval_video_path}/episode{TASK_ENV.test_num}.mp4",
-                    ],
-                    stdin=subprocess.PIPE,
-                )
-                TASK_ENV._set_eval_video_ffmpeg(ffmpeg)
+                    if TASK_ENV.eval_video_path is not None:
+                        ffmpeg = subprocess.Popen(
+                            [
+                                "ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo",
+                                "-pixel_format", "rgb24", "-video_size", video_size,
+                                "-framerate", "10", "-i", "-", "-pix_fmt", "yuv420p",
+                                "-vcodec", "libx264", "-crf", "23",
+                                f"{TASK_ENV.eval_video_path}/episode{TASK_ENV.test_num}.mp4",
+                            ],
+                            stdin=subprocess.PIPE,
+                        )
+                        TASK_ENV._set_eval_video_ffmpeg(ffmpeg)
 
-            succ = False
-            reset_func(model)
-            while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
-                observation = TASK_ENV.get_obs()
-                eval_func(TASK_ENV, model, observation)
-                # Keep-alive so a long rollout (no other RPC is sent mid-episode)
-                # is not mistaken for a hung worker by the dispatcher watchdog.
-                if TASK_ENV.take_action_cnt % heartbeat_every == 0:
-                    client.heartbeat()
-                if TASK_ENV.eval_success:
-                    succ = True
+                    succ = False
+                    reset_func(model)
+                    while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
+                        observation = TASK_ENV.get_obs()
+                        eval_func(TASK_ENV, model, observation)
+                        # Keep-alive so a long rollout (no other RPC is sent mid-episode)
+                        # is not mistaken for a hung worker by the dispatcher watchdog.
+                        if TASK_ENV.take_action_cnt % heartbeat_every == 0:
+                            client.heartbeat()
+                        if TASK_ENV.eval_success:
+                            succ = True
+                            break
+                    # A failed episode that ran out of steps (hit step_lim) vs. a real
+                    # terminal failure — dispatcher records this so a tight step_lim is
+                    # distinguishable from genuine model error.
+                    step_limit_hit = (not succ) and (TASK_ENV.take_action_cnt >= TASK_ENV.step_lim)
+
+                    if TASK_ENV.eval_video_path is not None:
+                        TASK_ENV._del_eval_video_ffmpeg()
+
+                    if succ:
+                        TASK_ENV.suc += 1
+                        print("\033[92mSuccess!\033[0m")
+                    else:
+                        print("\033[91mFail!\033[0m")
+
+                    now_id += 1
+                    TASK_ENV.close_env(clear_cache=(now_id % clear_cache_freq == 0))
+                    if TASK_ENV.render_freq:
+                        TASK_ENV.viewer.close()
+                    TASK_ENV.test_num += 1
+
+                    print(
+                        f"\033[93m{task_name}\033[0m | \033[94m{args['policy_name']}\033[0m | "
+                        f"\033[92m{args['task_config']}\033[0m\n"
+                        f"Success rate: \033[96m{TASK_ENV.suc}/{TASK_ENV.test_num}\033[0m => "
+                        f"\033[95m{round(TASK_ENV.suc / TASK_ENV.test_num * 100, 1)}%\033[0m, "
+                        f"current seed: \033[90m{now_seed}\033[0m\n"
+                    )
+                    client.report_result(now_seed, success=bool(succ), step_limit_hit=bool(step_limit_hit))
                     break
-            # A failed episode that ran out of steps (hit step_lim) vs. a real
-            # terminal failure — dispatcher records this so a tight step_lim is
-            # distinguishable from genuine model error.
-            step_limit_hit = (not succ) and (TASK_ENV.take_action_cnt >= TASK_ENV.step_lim)
-
-            if TASK_ENV.eval_video_path is not None:
-                TASK_ENV._del_eval_video_ffmpeg()
-
-            if succ:
-                TASK_ENV.suc += 1
-                print("\033[92mSuccess!\033[0m")
-            else:
-                print("\033[91mFail!\033[0m")
-
-            now_id += 1
-            TASK_ENV.close_env(clear_cache=(now_id % clear_cache_freq == 0))
-            if TASK_ENV.render_freq:
-                TASK_ENV.viewer.close()
-            TASK_ENV.test_num += 1
-
-            print(
-                f"\033[93m{task_name}\033[0m | \033[94m{args['policy_name']}\033[0m | "
-                f"\033[92m{args['task_config']}\033[0m\n"
-                f"Success rate: \033[96m{TASK_ENV.suc}/{TASK_ENV.test_num}\033[0m => "
-                f"\033[95m{round(TASK_ENV.suc / TASK_ENV.test_num * 100, 1)}%\033[0m, "
-                f"current seed: \033[90m{now_seed}\033[0m\n"
-            )
-            client.report_result(now_seed, success=bool(succ), step_limit_hit=bool(step_limit_hit))
+                except Exception:
+                    print(f"ROLLOUT_EXCEPTION task={task_name} seed={now_seed} attempt={rollout_attempt + 1}", flush=True)
+                    traceback.print_exc()
+                    try:
+                        if getattr(TASK_ENV, "eval_video_path", None) is not None:
+                            TASK_ENV._del_eval_video_ffmpeg()
+                        TASK_ENV.close_env()
+                    except Exception:
+                        traceback.print_exc()
+                    if rollout_attempt == 2:
+                        raise
 
         return st_seed, TASK_ENV.suc
 

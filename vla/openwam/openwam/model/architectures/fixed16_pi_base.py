@@ -765,6 +765,7 @@ class Fixed16PiArchitectureBase(BaseWAMArchitecture):
         prompt: str = "",
         *,
         first_frame_image=None,
+        observation_images=None,
         proprio=None,
         profile: bool = False,
         num_inference_steps: Optional[int] = None,
@@ -786,7 +787,7 @@ class Fixed16PiArchitectureBase(BaseWAMArchitecture):
         feeds both backbones, routed through this architecture's own
         ``prepare_inputs`` so deploy and training build the inputs identically.
         """
-        if not first_frame_image:
+        if not first_frame_image and not observation_images:
             raise ValueError(
                 f"{type(self).__name__}.generate requires `first_frame_image`: the observation frame is "
                 "the only visual input this family reads. The deploy request must carry one."
@@ -813,8 +814,11 @@ class Fixed16PiArchitectureBase(BaseWAMArchitecture):
         was_training = self.training
         self.eval()
 
-        images = list(first_frame_image)
-        inputs = self.prepare_inputs([{"video": images[:1], "prompt": prompt}])
+        images = list(observation_images if observation_images is not None else first_frame_image)
+        sample = {"video": images[:1], "prompt": prompt}
+        if observation_images is not None:
+            sample["observation_images"] = images
+        inputs = self.prepare_inputs([sample])
         for key in ("actions", "action_is_pad", "proprio", "proprio_mask"):
             inputs.pop(key, None)
 

@@ -5,6 +5,8 @@ defaults:
 
 training:
   # --- Debug ---
+  log_metrics_csv: false
+  retain_resume_state: false
   debug: false                    # Debug mode: max_steps=20, save@10, constant LR
 
   # --- Optimizer ---
@@ -23,6 +25,7 @@ training:
   lr_scheduler: cosine            # cosine with linear warmup; null = constant LR
   warmup_ratio: 0.05              # Fraction of total steps for linear warmup
   lr_min_ratio: 0.01              # Minimum LR as fraction of learning_rate
+  scheduler_restart_opt_step: null # Resume boundary for a new LR schedule; later resumes keep its saved progress
 
   # --- Per-module LR (null = use base learning_rate) ---
   action_lr: null                 # Override LR for action model parameters
@@ -48,6 +51,7 @@ training:
   # --- Loss weights ---
   lambda_video: 1.0               # Video flow-matching loss weight
   lambda_action: 1.0              # Action flow-matching loss weight
+  lambda_grounding: 0.0           # Optional GroundingPI assistant-token CE
 
   # --- Flow matching timestep range ---
   max_timestep_boundary: 1.0      # Upper bound (fraction of total timesteps)

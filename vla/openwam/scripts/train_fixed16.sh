@@ -24,7 +24,7 @@ BACKBONE="${1:?usage: $0 <backbone>   # wan22_ti2v_5b | cosmos_predict25 | qwen3
 case "$BACKBONE" in
     wan22_ti2v_5b|cosmos_predict25)
         MODEL_ARGS="model=dual_system_fixed16 model/video_backbone=${BACKBONE}" ;;
-    qwen3_vl_4b|qwen3_vl_2b|paligemma_3b|rex_omni_3b|locate_anything_3b|rynnbrain_2b)
+    groundingpi|qwen3_vl_4b|qwen3_vl_2b|paligemma_3b|rex_omni_3b|locate_anything_3b|rynnbrain_2b)
         MODEL_ARGS="model=vlm_system model/vlm_backbone=${BACKBONE}" ;;
     *)  echo "error: unknown backbone '${BACKBONE}'." >&2; exit 1 ;;
 esac

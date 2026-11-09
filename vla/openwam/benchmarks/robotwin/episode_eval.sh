@@ -52,6 +52,10 @@ maybe_configure_sapien_egl() {
     export __EGL_VENDOR_LIBRARY_FILENAMES="${egl_json}"
 }
 
+if [[ -n "${ROBOTWIN_VISIBLE_GPUS:-}" ]]; then
+    IFS=, read -ra visible_gpus <<< "$ROBOTWIN_VISIBLE_GPUS"
+    gpu="${visible_gpus[$gpu]}"
+fi
 export CUDA_VISIBLE_DEVICES="${gpu}"
 export PYTHONPATH="${ROBOTWIN_PATH}:${SCRIPT_DIR}:${PYTHONPATH:-}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/matplotlib}"

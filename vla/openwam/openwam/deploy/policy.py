@@ -76,6 +76,8 @@ class WAMPolicy:
         if img is not None:
             # Single first frame — pipeline expects list[PIL.Image]
             conditions["first_frame_image"] = [img]
+        if "observation_images" in obs:
+            conditions["observation_images"] = obs["observation_images"]
         if obs.get("prompt"):
             conditions["prompt"] = obs["prompt"]
         if "state" in obs and obs["state"] is not None:

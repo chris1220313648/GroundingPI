@@ -34,14 +34,13 @@ __all__ = [
     "_VIDEO_BACKBONE_REGISTRY",
 ]
 
-# Built-in registrations (kept at the bottom so the implementation can import
-# from ``registry`` / ``base`` without circular issues).
-from openwam.model.video_backbone.wan_backbone import Wan22Ti2v  # noqa: E402
-
-register_video_backbone("wan22_ti2v_5b")(Wan22Ti2v)
-
-# Cosmos-Predict2.5 backbone. Importing the module is CPU-only-CI safe — the
-# heavy ``cosmos_predict2`` import is deferred to ``from_pretrained``.
-from openwam.model.video_backbone.cosmos_predict25_backbone import CosmosPredict25VideoBackbone  # noqa: E402
-
-register_video_backbone("cosmos_predict25_2b")(CosmosPredict25VideoBackbone)
+# Load optional implementations only when requested. Base interfaces remain
+# importable in VLM-only installations without the vendored Wan runtime.
+def __getattr__(name):
+    if name == "Wan22Ti2v":
+        from openwam.model.video_backbone.wan_backbone import Wan22Ti2v
+        return Wan22Ti2v
+    if name == "CosmosPredict25VideoBackbone":
+        from openwam.model.video_backbone.cosmos_predict25_backbone import CosmosPredict25VideoBackbone
+        return CosmosPredict25VideoBackbone
+    raise AttributeError(name)

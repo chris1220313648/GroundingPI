@@ -65,6 +65,13 @@ def build_video_backbone(
                   Forwarded to the backbone so it can validate that its text
                   embedding expects the same context width as the action stream.
     """
+    if name not in _VIDEO_BACKBONE_REGISTRY:
+        if name == "wan22_ti2v_5b":
+            from openwam.model.video_backbone.wan_backbone import Wan22Ti2v
+            register_video_backbone(name)(Wan22Ti2v)
+        elif name == "cosmos_predict25_2b":
+            from openwam.model.video_backbone.cosmos_predict25_backbone import CosmosPredict25VideoBackbone
+            register_video_backbone(name)(CosmosPredict25VideoBackbone)
     if name and name in _VIDEO_BACKBONE_REGISTRY:
         cls = _VIDEO_BACKBONE_REGISTRY[name]
     else:

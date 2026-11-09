@@ -1,0 +1,4 @@
+name: groundingpi
+checkpoint_path: /share/project/robot-rfm/robot-exp/usr/cjy/project/starVLA/playground/Pretrained_models/GroundingPI
+load_pretrained: true
+max_length: 2048
